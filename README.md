@@ -1,3 +1,12 @@
+---
+title: sql-query-env
+emoji: 🗄️
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+---
+
 # sql-query-env
 
 An **OpenEnv** environment where AI agents learn to write correct SQL queries of
