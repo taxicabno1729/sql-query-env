@@ -1,16 +1,19 @@
 """
 FastAPI application exposing the OpenEnv-compatible HTTP interface.
 
-Endpoints:
-  POST /reset          Start a new episode (optionally specify task_id)
-  POST /step           Submit a SQL action and receive observation + reward
-  GET  /state          Get current episode state
+Endpoints (OpenEnv spec):
+  GET  /health         Health check  → {"status": "healthy"}
+  GET  /metadata       Environment metadata
+  GET  /schema         Action / observation / state JSON schemas
+  POST /mcp            MCP JSON-RPC endpoint (tools/list)
+  POST /reset          Start a new episode
+  POST /step           Submit a SQL action
+  GET  /state          Current episode state
   GET  /tasks          List all available tasks
-  GET  /health         Health check
 """
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from .environment import SQLEnvironment
@@ -35,11 +38,61 @@ class ResetRequest(BaseModel):
     task_id: str | None = None
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+# ── OpenEnv required endpoints ────────────────────────────────────────────────
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "healthy"}
+
+
+@app.get("/metadata")
+def metadata() -> dict:
+    return {
+        "name": "sql-query-env",
+        "description": (
+            "An OpenEnv environment where AI agents learn to write SQL queries "
+            "of increasing complexity against a realistic e-commerce database."
+        ),
+        "version": "0.1.0",
+        "author": "Aniket Mazumdar",
+    }
+
+
+@app.get("/schema")
+def schema() -> dict:
+    return {
+        "action": SQLAction.model_json_schema(),
+        "observation": SQLObservation.model_json_schema(),
+        "state": SQLState.model_json_schema(),
+    }
+
+
+@app.post("/mcp")
+async def mcp(request: Request) -> dict:
+    """Minimal MCP JSON-RPC endpoint (tools/list)."""
+    body = await request.json()
+    method = body.get("method", "")
+    req_id = body.get("id", 1)
+
+    if method == "tools/list":
+        result = {
+            "tools": [
+                {
+                    "name": "reset",
+                    "description": "Reset the environment and start a new episode.",
+                    "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}},
+                },
+                {
+                    "name": "step",
+                    "description": "Submit a SQL query and receive a reward.",
+                    "inputSchema": SQLAction.model_json_schema(),
+                },
+            ]
+        }
+    else:
+        result = {"error": f"Unsupported method: {method}"}
+
+    return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
 @app.post("/reset", response_model=SQLObservation)

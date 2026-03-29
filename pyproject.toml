@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-serve = "server.main:start"
+server = "server.app:main"
 
 [tool.uv]
 dev-dependencies = []
