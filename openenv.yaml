@@ -1,0 +1,75 @@
+name: sql-query-env
+version: "0.1.0"
+description: >
+  An OpenEnv environment where AI agents learn to write SQL queries of
+  increasing complexity against a realistic e-commerce database.
+  The agent receives a natural-language question and the database schema,
+  submits a SQL query, and receives a deterministic correctness score (0–1).
+
+author: Aniket Mazumdar
+license: MIT
+
+server:
+  base_url: http://localhost:8000
+  endpoints:
+    reset: POST /reset
+    step:  POST /step
+    state: GET  /state
+
+action_space:
+  type: text
+  field: sql_query
+  description: A valid SQLite SQL SELECT query.
+
+observation_space:
+  type: object
+  fields:
+    done:             bool
+    reward:           float   # 0.0 – 1.0
+    task_description: string
+    schema_info:      string
+    feedback:         string
+    metadata:         object
+
+reward:
+  min: 0.0
+  max: 1.0
+  description: >
+    Deterministic SQL grader.
+    1.0 = exact match; 0.7 = correct columns + ≥90% rows;
+    0.4 = correct columns + 50–89% rows; 0.2 = partial columns;
+    0.0 = SQL error or wrong result.
+
+tasks:
+  - id: E1
+    difficulty: easy
+    description: List all product names and their prices.
+  - id: E2
+    difficulty: easy
+    description: Find all customers from New York.
+  - id: E3
+    difficulty: easy
+    description: Count the total number of orders.
+  - id: M1
+    difficulty: medium
+    description: Total revenue per product category.
+  - id: M2
+    difficulty: medium
+    description: Top 5 customers by total spend.
+  - id: M3
+    difficulty: medium
+    description: Orders containing Electronics products.
+  - id: H1
+    difficulty: hard
+    description: Rank customers by spend within each city (window functions).
+  - id: H2
+    difficulty: hard
+    description: Customers above average spend with percentile rank (CTE + window).
+
+docker:
+  image: sql-query-env
+  build: .
+  port: 8000
+
+run:
+  command: uv run uvicorn server.main:app --host 0.0.0.0 --port 8000
