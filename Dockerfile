@@ -6,7 +6,7 @@ RUN pip install --no-cache-dir uv
 WORKDIR /app
 
 # Copy dependency files first for layer caching
-COPY pyproject.toml .python-version ./
+COPY pyproject.toml ./
 
 # Install all third-party dependencies without building the local package.
 # The server/ directory is on sys.path via the working directory at runtime.
