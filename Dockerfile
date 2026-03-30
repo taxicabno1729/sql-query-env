@@ -8,8 +8,8 @@ WORKDIR /app
 # Copy dependency files first for layer caching
 COPY pyproject.toml .python-version ./
 
-# Install only third-party dependencies (skip building the local project)
-# so this layer is cached even when source changes
+# Install all third-party dependencies without building the local package.
+# The server/ directory is on sys.path via the working directory at runtime.
 RUN uv sync --no-dev --no-install-project
 
 # Copy application source
@@ -17,9 +17,6 @@ COPY server/ server/
 COPY data/ data/
 COPY main.py .
 COPY __init__.py client.py models.py ./
-
-# Now install the local project into the already-populated venv
-RUN uv sync --no-dev
 
 EXPOSE 8000
 
