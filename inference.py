@@ -1,19 +1,23 @@
 """
-Baseline inference agent for the SQL Query Training Environment.
+Inference Script — SQL Query Training Environment
+==================================================
+MANDATORY environment variables:
+    API_BASE_URL   The API endpoint for the LLM.
+    MODEL_NAME     The model identifier to use for inference.
+    HF_TOKEN       Your Hugging Face / API key.
+
+Optional:
+    LOCAL_IMAGE_NAME   Docker image name (when using from_docker_image())
+    ENV_URL            Running environment URL (default: http://localhost:8000)
 
 Usage:
-    API_BASE_URL=https://api.openai.com/v1 \
-    MODEL_NAME=gpt-4o \
-    HF_TOKEN=<your-key> \
+    API_BASE_URL=https://router.huggingface.co/v1 \\
+    MODEL_NAME=meta-llama/Llama-3.3-70B-Instruct \\
+    HF_TOKEN=hf_xxx \\
     uv run python inference.py
-
-Environment variables:
-    API_BASE_URL   OpenAI-compatible API base URL
-    MODEL_NAME     Model name to use (default: gpt-4o)
-    HF_TOKEN       API key (checked first); falls back to OPENAI_API_KEY
-    ENV_URL        URL of the running SQL environment (default: http://localhost:8000)
 """
 
+import json
 import os
 import re
 import sys
@@ -21,18 +25,19 @@ import sys
 import httpx
 from openai import OpenAI
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+# ── Environment variables (API_BASE_URL and MODEL_NAME have defaults; HF_TOKEN does not) ──
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o")
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY", "")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
+HF_TOKEN = os.getenv("HF_TOKEN")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # optional: used with from_docker_image()
 ENV_URL = os.getenv("ENV_URL", "http://localhost:8000")
 
-if not API_KEY:
-    print("ERROR: Set HF_TOKEN or OPENAI_API_KEY", file=sys.stderr)
+if not HF_TOKEN:
+    print(json.dumps({"type": "ERROR", "message": "HF_TOKEN env var is required"}))
     sys.exit(1)
 
-client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
 http = httpx.Client(base_url=ENV_URL, timeout=30.0)
 
 
@@ -40,11 +45,9 @@ http = httpx.Client(base_url=ENV_URL, timeout=30.0)
 
 def extract_sql(text: str) -> str:
     """Extract the first SQL block from model output."""
-    # Try fenced code block first
     match = re.search(r"```(?:sql)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
-    # Fallback: look for a SELECT statement
     match = re.search(r"(SELECT\b.*?)(?:;|$)", text, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
@@ -79,8 +82,7 @@ def call_model(task_description: str, schema_info: str, feedback: str, attempt: 
 # ── Episode runner ────────────────────────────────────────────────────────────
 
 def run_episode(task_id: str) -> dict:
-    """Run a single task episode and return a summary dict."""
-    # Reset
+    """Run a single task episode, emitting START / STEP / END structured logs."""
     reset_resp = http.post("/reset", json={"task_id": task_id})
     reset_resp.raise_for_status()
     obs = reset_resp.json()
@@ -91,16 +93,19 @@ def run_episode(task_id: str) -> dict:
     best_score = 0.0
     attempt = 0
 
-    print(f"\n{'='*60}")
-    print(f"Task {task_id}: {task_description}")
-    print("="*60)
+    # ── START ──
+    print(json.dumps({
+        "type": "START",
+        "task_id": task_id,
+        "model": MODEL_NAME,
+        "task_description": task_description,
+    }))
+    sys.stdout.flush()
 
     while not obs["done"]:
         attempt += 1
         raw_output = call_model(task_description, schema_info, feedback, attempt)
         sql_query = extract_sql(raw_output)
-
-        print(f"\n  Attempt {attempt}: {sql_query[:80]}{'...' if len(sql_query) > 80 else ''}")
 
         step_resp = http.post("/step", json={"sql_query": sql_query})
         step_resp.raise_for_status()
@@ -110,42 +115,57 @@ def run_episode(task_id: str) -> dict:
         feedback = obs["feedback"]
         best_score = max(best_score, reward)
 
-        print(f"  Reward: {reward:.2f} | {feedback}")
+        # ── STEP ──
+        print(json.dumps({
+            "type": "STEP",
+            "task_id": task_id,
+            "attempt": attempt,
+            "reward": reward,
+            "best_score": best_score,
+            "sql": sql_query,
+            "feedback": feedback,
+            "done": obs["done"],
+        }))
+        sys.stdout.flush()
 
-    print(f"\n  Final best score: {best_score:.2f}")
+    # ── END ──
+    print(json.dumps({
+        "type": "END",
+        "task_id": task_id,
+        "best_score": best_score,
+        "attempts": attempt,
+    }))
+    sys.stdout.flush()
+
     return {"task_id": task_id, "best_score": best_score, "attempts": attempt}
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    # Check environment is reachable
     try:
         http.get("/health").raise_for_status()
     except Exception as e:
-        print(f"ERROR: Cannot reach environment at {ENV_URL}: {e}", file=sys.stderr)
+        print(json.dumps({"type": "ERROR", "message": f"Cannot reach environment at {ENV_URL}: {e}"}))
         sys.exit(1)
 
-    # Get list of tasks
     tasks_resp = http.get("/tasks")
     tasks_resp.raise_for_status()
     task_ids = [t["task_id"] for t in tasks_resp.json()]
-
-    print(f"Running {len(task_ids)} tasks with model={MODEL_NAME}")
 
     results = []
     for task_id in task_ids:
         result = run_episode(task_id)
         results.append(result)
 
-    # Summary
-    print("\n" + "="*60)
-    print("SUMMARY")
-    print("="*60)
-    total = sum(r["best_score"] for r in results)
-    for r in results:
-        print(f"  {r['task_id']:4s}  score={r['best_score']:.2f}  attempts={r['attempts']}")
-    print(f"\n  Average score: {total / len(results):.3f}")
+    avg = sum(r["best_score"] for r in results) / len(results)
+    print(json.dumps({
+        "type": "SUMMARY",
+        "model": MODEL_NAME,
+        "results": results,
+        "average_score": round(avg, 4),
+    }))
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":
