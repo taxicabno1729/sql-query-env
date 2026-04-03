@@ -14,6 +14,7 @@ Endpoints (OpenEnv spec):
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from .environment import SQLEnvironment
@@ -39,6 +40,11 @@ class ResetRequest(BaseModel):
 
 
 # ── OpenEnv required endpoints ────────────────────────────────────────────────
+
+@app.get("/")
+def root() -> RedirectResponse:
+    return RedirectResponse(url="/docs")
+
 
 @app.get("/health")
 def health() -> dict:
