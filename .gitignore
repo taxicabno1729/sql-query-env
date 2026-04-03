@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local deploy/admin scripts (contain secrets via env vars - keep off HF)
+deploy.py
+deploy_status.py
