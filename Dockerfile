@@ -14,6 +14,6 @@ COPY data/ data/
 COPY main.py .
 COPY __init__.py client.py models.py ./
 
-EXPOSE 8000
+EXPOSE 7860
 
-CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "7860"]
