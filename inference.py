@@ -91,6 +91,63 @@ def request_json(
         raise RuntimeError(f"{method} {url} returned invalid JSON: {preview}") from exc
 
 
+def require_mapping(payload: Any, context: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{context} returned {type(payload).__name__}, expected object")
+    return payload
+
+
+def require_string(payload: dict[str, Any], key: str, context: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"{context} missing valid '{key}'")
+    return value
+
+
+def require_bool(payload: dict[str, Any], key: str, context: str) -> bool:
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise RuntimeError(f"{context} missing valid '{key}'")
+    return value
+
+
+def require_number(payload: dict[str, Any], key: str, context: str) -> float:
+    value = payload.get(key)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise RuntimeError(f"{context} missing valid '{key}'")
+    return float(value)
+
+
+def parse_observation(payload: Any, context: str) -> dict[str, Any]:
+    obs = require_mapping(payload, context)
+    return {
+        "done": require_bool(obs, "done", context),
+        "reward": require_number(obs, "reward", context),
+        "task_description": require_string(obs, "task_description", context),
+        "schema_info": require_string(obs, "schema_info", context),
+        "feedback": require_string(obs, "feedback", context),
+    }
+
+
+def check_environment_health(settings: dict[str, str | None]) -> None:
+    health = require_mapping(env_request(settings, "/health"), "GET /health")
+    status = require_string(health, "status", "GET /health").lower()
+    if status not in {"healthy", "ok"}:
+        raise RuntimeError(f"unexpected health status: {status}")
+
+
+def load_task_ids(settings: dict[str, str | None]) -> list[str]:
+    tasks = env_request(settings, "/tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise RuntimeError("GET /tasks returned no tasks")
+
+    task_ids: list[str] = []
+    for index, task in enumerate(tasks):
+        task_payload = require_mapping(task, f"GET /tasks item {index}")
+        task_ids.append(require_string(task_payload, "task_id", f"GET /tasks item {index}"))
+    return task_ids
+
+
 def extract_sql(text: str) -> str:
     """Extract the first SQL block from model output."""
     match = re.search(r"```(?:sql)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
@@ -163,7 +220,10 @@ def env_request(
 
 def run_episode(settings: dict[str, str | None], task_id: str) -> dict[str, Any]:
     """Run a single task episode, emitting START / STEP / END structured logs."""
-    obs = env_request(settings, "/reset", method="POST", payload={"task_id": task_id})
+    obs = parse_observation(
+        env_request(settings, "/reset", method="POST", payload={"task_id": task_id}),
+        "POST /reset",
+    )
 
     task_description = obs["task_description"]
     schema_info = obs["schema_info"]
@@ -185,7 +245,10 @@ def run_episode(settings: dict[str, str | None], task_id: str) -> dict[str, Any]
         raw_output = call_model(settings, task_description, schema_info, feedback, attempt)
         sql_query = extract_sql(raw_output)
 
-        obs = env_request(settings, "/step", method="POST", payload={"sql_query": sql_query})
+        obs = parse_observation(
+            env_request(settings, "/step", method="POST", payload={"sql_query": sql_query}),
+            "POST /step",
+        )
 
         reward = obs["reward"]
         feedback = obs["feedback"]
@@ -223,18 +286,14 @@ def main() -> None:
         fail("HF_TOKEN env var is required")
 
     try:
-        env_request(settings, "/health")
+        check_environment_health(settings)
     except Exception as exc:
         fail(f"Cannot reach environment at {settings['env_url']}: {exc}")
 
     try:
-        tasks = env_request(settings, "/tasks")
-        task_ids = [task["task_id"] for task in tasks]
+        task_ids = load_task_ids(settings)
     except Exception as exc:
         fail(f"Unable to load tasks from environment: {exc}")
-
-    if not task_ids:
-        fail("Environment returned no tasks")
 
     results = []
     for task_id in task_ids:

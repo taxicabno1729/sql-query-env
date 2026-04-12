@@ -14,7 +14,9 @@ Usage:
     print(obs["reward"], obs["feedback"])
 """
 
-import httpx
+import json
+from typing import Any
+from urllib import error, request
 
 from models import SQLAction, SQLObservation, SQLState
 
@@ -23,30 +25,54 @@ class SQLEnvClient:
     """Synchronous HTTP client for the SQL Query Training Environment."""
 
     def __init__(self, base_url: str = "http://localhost:8000", timeout: float = 30.0):
-        self._http = httpx.Client(base_url=base_url, timeout=timeout)
+        self._base_url = base_url.rstrip("/")
+        self._timeout = timeout
+
+    def _request_json(
+        self, path: str, *, method: str = "GET", payload: dict[str, Any] | None = None
+    ) -> Any:
+        url = f"{self._base_url}/{path.lstrip('/')}"
+        body = None
+        headers = {"Accept": "application/json"}
+
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+
+        req = request.Request(url, data=body, headers=headers, method=method)
+
+        try:
+            with request.urlopen(req, timeout=self._timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"{method} {url} failed with status {exc.code}: {detail or exc.reason}"
+            ) from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"{method} {url} failed: {exc.reason}") from exc
 
     def health(self) -> dict:
-        return self._http.get("/health").raise_for_status().json()
+        return self._request_json("/health")
 
     def reset(self, task_id: str | None = None) -> SQLObservation:
         body = {"task_id": task_id} if task_id else {}
-        resp = self._http.post("/reset", json=body).raise_for_status()
-        return SQLObservation(**resp.json())
+        return SQLObservation(**self._request_json("/reset", method="POST", payload=body))
 
     def step(self, sql_query: str) -> SQLObservation:
         action = SQLAction(sql_query=sql_query)
-        resp = self._http.post("/step", json=action.model_dump()).raise_for_status()
-        return SQLObservation(**resp.json())
+        return SQLObservation(
+            **self._request_json("/step", method="POST", payload=action.model_dump())
+        )
 
     def state(self) -> SQLState:
-        resp = self._http.get("/state").raise_for_status()
-        return SQLState(**resp.json())
+        return SQLState(**self._request_json("/state"))
 
     def tasks(self) -> list[dict]:
-        return self._http.get("/tasks").raise_for_status().json()
+        return self._request_json("/tasks")
 
     def close(self) -> None:
-        self._http.close()
+        return None
 
     def __enter__(self) -> "SQLEnvClient":
         return self
