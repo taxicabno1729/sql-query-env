@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Unit tests
+        run: uv run pytest -q
+
+      - name: Eval harness self-check (oracle must score 1.0)
+        run: |
+          uv run python -m eval.run --predictor oracle --out eval/results/oracle.json --quiet
+          uv run python - <<'PY'
+          import json, sys
+          data = json.load(open("eval/results/oracle.json"))
+          summary = data["summary"]
+          if summary["exact_match_rate"] != 1.0:
+              print("Oracle did not score 1.0:", summary)
+              sys.exit(1)
+          print("oracle exact match:", summary["exact_match_rate"])
+          PY
+
+      - name: Naive floor baseline (informational)
+        run: uv run python -m eval.run --predictor naive --out eval/results/naive.json --quiet
+
+      - name: Upload eval results
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: eval/results/*.json
+          if-no-files-found: ignore
