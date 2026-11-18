@@ -60,6 +60,81 @@ Partial credit avoids sparse reward signals — critical for RL training.
 
 ---
 
+## Evaluation harness
+
+The environment rewards an *episode*. To measure whether a model can actually
+write SQL, this repo also ships a small, reproducible evaluation harness in
+`eval/` — separate golden set, hard metrics, and a CLI that prints a table you
+can paste into a PR.
+
+### Golden set
+
+`eval/dataset.py` defines 12 items across four difficulty bands (easy / medium /
+hard / expert), each with a reference query that is executed against the seeded
+database. A test asserts every reference query runs and returns rows, so a
+broken item fails CI instead of quietly scoring 0.
+
+### Metrics
+
+Metrics are deliberately multiple, because "score" hides disagreements:
+
+| Metric | Meaning |
+|---|---|
+| **exact match** | identical column names, identical rows, identical order |
+| **result match** | identical column names, row order ignored |
+| **value match** | identical row values, **column names ignored** |
+| mean graded reward | the environment's own partial-credit rubric |
+| error rate | predictions that raised a SQL error |
+
+`value match` exists because the reward grader and exact match are column-name
+sensitive: `SELECT COUNT(*)` and `SELECT COUNT(*) AS order_count` return the same
+answer, but only one of them is "exact". Reporting all three makes the
+difference visible instead of burying it in one number. Results carry a 95%
+Wilson interval, because 12 items cannot support a precise percentage.
+
+### Run it
+
+```bash
+uv run python -m eval.run --predictor oracle          # harness self-check, must be 100%
+uv run python -m eval.run --predictor naive           # deterministic floor, no network
+EVAL_LLM_API_KEY=... uv run python -m eval.run \
+    --predictor llm --model anthropic/claude-sonnet-4.5 --out eval/results/claude.json
+uv run python -m eval.run --replay eval/results/claude.json   # re-score, no model calls
+```
+
+The `llm` predictor speaks OpenAI-compatible `/chat/completions`, so OpenRouter,
+vLLM, Ollama and OpenAI all work; `EVAL_LLM_BASE_URL` and `EVAL_LLM_MODEL`
+override the defaults. Only that predictor needs a key — `oracle` and `naive`
+run offline, and CI runs those.
+
+### Measured results
+
+12 items, temperature 0, single attempt per item. Reproduce with `--replay`
+against the committed JSON in `eval/results/`.
+
+| Predictor | Exact match | Value match | Mean reward | SQL errors |
+|---|---:|---:|---:|---:|
+| oracle (upper bound, sanity check) | 100.0% | 100.0% | 1.00 | 0.0% |
+| naive fixed template (floor) | 8.3% | 8.3% | 0.13 | 0.0% |
+| claude-sonnet-4.5 | 50.0% | 83.3% | 0.55 | 0.0% |
+
+By difficulty, claude-sonnet-4.5: easy 75%, medium 50%, hard 0%, expert 50%
+exact match. It never produced invalid SQL — every miss was a semantic one
+(missing rounding in an aggregate, a `DISTINCT CASE` that double-counted, a
+window ranking that ordered by the pre-aggregated column).
+
+### What these numbers do and do not say
+
+- They measure **execution correctness on 12 hand-written questions against one
+  50-row database**. That is a smoke test with a wide interval, not a benchmark.
+- `exact match` punishes alias differences, so treat 50% as a *lower bound* on
+  semantic correctness; `value match` (83.3%) is the closer proxy, and the gap
+  between them is exactly the alias effect.
+- There is no LLM judge and no claim about explanation quality. Faithfulness of
+  natural-language answers is not measured here at all.
+
+---
+
 ## Database Schema
 
 ```sql
